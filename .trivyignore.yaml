@@ -1,0 +1,19 @@
+# Exceptions to the Trivy gates (sca job, build job, release scan).
+# Policy: https://github.com/aidantiu/platform-gitops/blob/main/docs/03-security-policy.md
+#
+# Every entry needs:
+#   id          one CVE or advisory id (no wildcards)
+#   statement   why it is acceptable, with a link to the advisory or issue
+#   expired_at  yyyy-mm-dd, at most 30 days after the commit that adds it
+# Add purls: or paths: when only one package or file is affected.
+# Trivy stops ignoring an entry after expired_at, so the gate fails again.
+# .github/scripts/check-trivyignore.py enforces these rules in CI.
+#
+# Example (do not enable without a reason):
+# vulnerabilities:
+#   - id: CVE-2099-0001
+#     statement: "Not reachable: only used by test code. https://example.com/advisory"
+#     expired_at: 2026-12-01
+#     purls:
+#       - pkg:golang/example.com/module@1.2.3
+vulnerabilities: []
