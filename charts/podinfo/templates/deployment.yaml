@@ -21,7 +21,10 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1
+      maxUnavailable: {{ .Values.rollingUpdate.maxUnavailable }}
+      {{- with .Values.rollingUpdate.maxSurge }}
+      maxSurge: {{ . }}
+      {{- end }}
   selector:
     matchLabels:
       {{- include "podinfo.selectorLabels" . | nindent 6 }}

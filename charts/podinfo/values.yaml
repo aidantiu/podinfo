@@ -278,7 +278,20 @@ grpcRoute:
 serviceMonitor:
   enabled: false
   interval: 15s
+  # scrape timeout (must be shorter than the interval); the Prometheus default is used when empty
+  scrapeTimeout: ""
   additionalLabels: {}
+  # metricRelabelings applied to scraped samples, e.g. an allow-list to keep series small:
+  #  - sourceLabels: [__name__]
+  #    regex: http_requests_total|http_request_duration_seconds_.*
+  #    action: keep
+  metricRelabelings: []
+
+# Deployment rolling update settings
+rollingUpdate:
+  maxUnavailable: 1
+  # absolute number or percentage; the Kubernetes default (25%) is used when empty
+  maxSurge: ""
 
 resources:
   limits:
