@@ -35,10 +35,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Go (version from go.mod)
+      - name: Set up Go (latest patch of the go.mod minor, so stdlib fixes are picked up)
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          go-version: 1.27.x
       - name: Unit tests
         run: go test ./...
 
@@ -116,10 +116,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Go (version from go.mod)
+      - name: Set up Go (latest patch of the go.mod minor, so stdlib fixes are picked up)
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          go-version: 1.27.x
       - name: Exception file is valid (statement, expiry, at most 30 days)
         run: python3 .github/scripts/check-trivyignore.py .trivyignore.yaml
       - name: Trivy fs gate (fixable CRITICAL in dependencies fails the job)
@@ -150,8 +150,9 @@ jobs:
           output: trivy-fs-report.txt
       - name: govulncheck (reachable vulnerabilities; warns only)
         run: |
-          set -uo pipefail
-          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          set +e
+          set -o pipefail
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" || exit 1
           govulncheck ./... | tee govulncheck.txt
           rc="${PIPESTATUS[0]}"
           if [ "$rc" -eq 3 ]; then
