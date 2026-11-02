@@ -1,0 +1,250 @@
+name: ci
+
+# Gates that run on every pull request and on every push to main.
+# Nothing here publishes anything: images are built, scanned and thrown away.
+# Publishing and signing live in release.yml (push to main only).
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+# No permissions by default; every job asks for exactly what it needs.
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  TRIVY_VERSION: v0.76.1
+  GOVULNCHECK_VERSION: v1.9.0
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Runner architecture
+        run: echo "runner arch=$(uname -m) os=${RUNNER_OS}"
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go (version from go.mod)
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Unit tests
+        run: go test ./...
+
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      HADOLINT_VERSION: 2.15.1
+      HADOLINT_SHA256: c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - name: Runner architecture
+        run: echo "runner arch=$(uname -m) os=${RUNNER_OS}"
+      - name: Checkout (full history for gitleaks)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks, hadolint, actionlint (pinned versions, checksum verified)
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/bin" "$RUNNER_TEMP/dl"
+          cd "$RUNNER_TEMP/dl"
+          fetch() { # url sha256 file
+            curl -fsSL --retry 3 -o "$3" "$1"
+            echo "$2  $3" | sha256sum -c -
+          }
+          fetch "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" "$GITLEAKS_SHA256" gitleaks.tgz
+          tar -xzf gitleaks.tgz -C "$HOME/bin" gitleaks
+          fetch "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-linux-x86_64" "$HADOLINT_SHA256" hadolint
+          install -m 0755 hadolint "$HOME/bin/hadolint"
+          fetch "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" "$ACTIONLINT_SHA256" actionlint.tgz
+          tar -xzf actionlint.tgz -C "$HOME/bin" actionlint
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - name: hadolint (Dockerfile, fails on level error)
+        run: hadolint --failure-threshold error Dockerfile
+      - name: gitleaks (secrets in the commits of this PR, or all history on main)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            gitleaks git --no-banner --redact -v --log-opts="${BASE_SHA}..${HEAD_SHA}" .
+          else
+            gitleaks git --no-banner --redact -v .
+          fi
+      - name: actionlint (workflow syntax and shell)
+        run: actionlint -color
+      - name: No pull_request_target anywhere in workflows
+        run: |
+          if grep -rn "pull_request_target" .github/workflows; then
+            echo "::error::pull_request_target is forbidden by the security policy"
+            exit 1
+          fi
+
+  sca:
+    name: sca
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Runner architecture
+        run: echo "runner arch=$(uname -m) os=${RUNNER_OS}"
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go (version from go.mod)
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Exception file is valid (statement, expiry, at most 30 days)
+        run: python3 .github/scripts/check-trivyignore.py .trivyignore.yaml
+      - name: Trivy fs gate (fixable CRITICAL in dependencies fails the job)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore.yaml
+          format: table
+      - name: Trivy fs report (HIGH and CRITICAL including unfixed; warns only)
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        continue-on-error: true
+        with:
+          skip-setup-trivy: true
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+          trivyignores: .trivyignore.yaml
+          format: table
+          output: trivy-fs-report.txt
+      - name: govulncheck (reachable vulnerabilities; warns only)
+        run: |
+          set -uo pipefail
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          govulncheck ./... | tee govulncheck.txt
+          rc="${PIPESTATUS[0]}"
+          if [ "$rc" -eq 3 ]; then
+            echo "::warning title=govulncheck::reachable vulnerabilities found, see the job summary"
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error::govulncheck could not run (exit ${rc}); a gate that cannot run is a failed gate"
+            exit "$rc"
+          fi
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "### Trivy fs (HIGH and CRITICAL, unfixed included, warn only)"
+            echo '```'
+            cat trivy-fs-report.txt 2>/dev/null || echo "(no report)"
+            echo '```'
+            echo "### govulncheck (warn only)"
+            echo '```'
+            cat govulncheck.txt 2>/dev/null || echo "(no report)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Runner architecture
+        run: echo "runner arch=$(uname -m) os=${RUNNER_OS}"
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build linux/arm64 image (loaded locally, never pushed)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/arm64
+          push: false
+          load: true
+          tags: podinfo:ci
+          provenance: false
+          sbom: false
+          build-args: |
+            REVISION=${{ github.sha }}
+      - name: Smoke test the image
+        run: |
+          set -euo pipefail
+          docker image inspect podinfo:ci --format 'image architecture={{.Architecture}} os={{.Os}}'
+          docker run -d --name podinfo -p 9898:9898 podinfo:ci
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:9898/healthz; then break; fi
+            sleep 1
+          done
+          echo
+          curl -fsS http://localhost:9898/version
+          echo
+          docker rm -f podinfo
+      - name: Trivy image gate (fixable CRITICAL in OS packages or Go modules fails the job)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: image
+          image-ref: podinfo:ci
+          scanners: vuln
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore.yaml
+          format: table
+      - name: Trivy image report (HIGH and CRITICAL including unfixed; warns only)
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        continue-on-error: true
+        with:
+          skip-setup-trivy: true
+          scan-type: image
+          image-ref: podinfo:ci
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+          trivyignores: .trivyignore.yaml
+          format: table
+          output: trivy-image-report.txt
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "### Trivy image (HIGH and CRITICAL, unfixed included, warn only)"
+            echo '```'
+            cat trivy-image-report.txt 2>/dev/null || echo "(no report)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

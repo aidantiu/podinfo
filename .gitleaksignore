@@ -1,0 +1,25 @@
+# Findings already present in upstream stefanprodan/podinfo history (demo keys, test tokens, example Secrets).
+# Reviewed 2026-11-02 in the fork; none is a credential of this project. One fingerprint per finding: commit:file:rule:line.
+# New findings (any other commit/file/line) still fail the gitleaks gate.
+# pkg/api/http/token_test.go (jwt)
+4920afdafb49d68b84e5598ce09b07e39f376824:pkg/api/http/token_test.go:jwt:108
+# pkg/api/grpc/token_test.go (generic-api-key)
+910883321444cdfc021a122740ea9c78808d7860:pkg/api/grpc/token_test.go:generic-api-key:29
+# cmd/podinfo/main.go (generic-api-key)
+6c98fbf1f4b88cfcc23369e7e51ecf901c961b58:cmd/podinfo/main.go:generic-api-key:60
+# deploy/skaffold/test/basic-auth.yaml (kubernetes-secret-yaml)
+fc8dfc7678b50e9fe124b145f0877c0f04ff5291:deploy/skaffold/test/basic-auth.yaml:kubernetes-secret-yaml:2
+# deploy/skaffold/test/basic-auth.yaml (generic-api-key)
+fc8dfc7678b50e9fe124b145f0877c0f04ff5291:deploy/skaffold/test/basic-auth.yaml:generic-api-key:3
+# deploy/k9/ssh-key.yaml (private-key)
+310643b0df40153fb7241c3e39bc8e81e6adb649:deploy/k9/ssh-key.yaml:private-key:7
+# deploy/k9/flux-dep.yaml (generic-api-key)
+310643b0df40153fb7241c3e39bc8e81e6adb649:deploy/k9/flux-dep.yaml:generic-api-key:52
+# charts/ngrok/values.yaml (generic-api-key)
+0da1f0276a83b4732a918a8314964f092e07f7e2:charts/ngrok/values.yaml:generic-api-key:19
+# docs/5-canary.md (generic-api-key)
+2b9a77585cc36cc755f9adf4c8eb9a1a9eb0f27a:docs/5-canary.md:generic-api-key:237
+# deploy/k9/ssh-key.yaml (kubernetes-secret-yaml)
+554da045d76b32044d6059b564399c0b3e7e31da:deploy/k9/ssh-key.yaml:kubernetes-secret-yaml:4
+# deploy/k9/ssh-key.yaml (private-key)
+554da045d76b32044d6059b564399c0b3e7e31da:deploy/k9/ssh-key.yaml:private-key:6
