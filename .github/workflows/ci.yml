@@ -97,8 +97,9 @@ jobs:
         run: actionlint -color
       - name: No pull_request_target anywhere in workflows
         run: |
-          if grep -rn "pull_request_target" .github/workflows; then
-            echo "::error::pull_request_target is forbidden by the security policy"
+          # the pattern is split so that this file does not match itself
+          if grep -rn "pull_request""_target" .github/workflows; then
+            echo "::error::the privileged pull-request trigger is forbidden by the security policy"
             exit 1
           fi
 
