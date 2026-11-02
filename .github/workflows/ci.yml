@@ -95,7 +95,7 @@ jobs:
           fi
       - name: actionlint (workflow syntax and shell)
         run: actionlint -color
-      - name: No pull_request_target anywhere in workflows
+      - name: Forbidden privileged pull-request trigger is not used
         run: |
           # the pattern is split so that this file does not match itself
           if grep -rn "pull_request""_target" .github/workflows; then
