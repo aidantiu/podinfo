@@ -1,0 +1,204 @@
+name: rescan
+
+# Nightly rescan of the newest released image: finds CVEs published AFTER the build gate passed.
+#
+# Design:
+#   - Target = the newest GHCR version of ghcr.io/aidantiu/podinfo that has a sha-<8 hex> tag
+#     (listed with the packages API and GITHUB_TOKEN, `packages: read`). It is scanned by DIGEST,
+#     so a moving tag can never change what was scanned.
+#   - Production normally runs that image or the one before it (one promotion behind). Which digest
+#     prod runs is recorded in the private platform-gitops repository, and this public repository
+#     must not hold a token that can read it (the deployer GitHub App is deliberately not exposed
+#     to scheduled jobs). The newest image is the superset worth gating on, so that is accepted.
+#   - Gate = fixable CRITICAL (same policy and same Trivy pin as release.yml, same exception file).
+#     Fixable HIGH is only reported in the job summary.
+#   - Result = ONE open issue labelled `security-rescan`, opened in THIS repository with GITHUB_TOKEN
+#     (`issues: write`). It is updated in place, gets a comment only when the set of CVE ids changes,
+#     and is closed with a comment once the scan is clean.
+# Manual run: `gh workflow run rescan.yml -f image=<sha256:... digest or sha-xxxxxxxx tag>` scans an
+# older image instead (used to exercise the issue logic).
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Optional: image digest (sha256:...) or tag (sha-xxxxxxxx) to scan instead of the newest'
+        required: false
+        default: ''
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: rescan
+  cancel-in-progress: false
+
+env:
+  TRIVY_VERSION: v0.76.1
+
+jobs:
+  rescan:
+    name: rescan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+      packages: read
+    steps:
+      - name: Runner architecture
+        run: echo "runner arch=$(uname -m) os=${RUNNER_OS}"
+      - name: Checkout (for the Trivy exception file only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve the newest released image (digest and tag)
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          WANT: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          package="${GITHUB_REPOSITORY#*/}"
+          if [ -n "$WANT" ] && ! [[ "$WANT" =~ ^(sha256:[0-9a-f]{64}|sha-[0-9a-f]{8})$ ]]; then
+            echo "::error::input image must be a sha256:<64 hex> digest or a sha-<8 hex> tag"
+            exit 1
+          fi
+          gh api --paginate "/users/${OWNER}/packages/container/${package}/versions?per_page=100" | jq -s 'add // []' > versions.json
+          echo "package versions listed: $(jq 'length' versions.json)"
+          picked="$(jq -r --arg want "$WANT" '
+            map({digest: .name, created: .created_at, tags: [.metadata.container.tags[]? | select(test("^sha-[0-9a-f]{8}$"))]})
+            | map(select((.tags | length) > 0))
+            | map(select($want == "" or .digest == $want or (.tags | index($want))))
+            | sort_by(.created)
+            | last // empty
+            | "\(.digest) \(.tags[0]) \(.created)"' versions.json)"
+          if [ -z "$picked" ]; then
+            echo "::error::no sha-<8 hex> tagged image version found (input: '${WANT}')"
+            exit 1
+          fi
+          read -r digest tag created <<< "$picked"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::unexpected digest '${digest}'"; exit 1; }
+          {
+            echo "digest=${digest}"
+            echo "tag=${tag}"
+            echo "ref=ghcr.io/${OWNER}/${package}@${digest}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Scanning ${tag} (created ${created}) ${digest}"
+      - name: Trivy scan of the digest (fixable HIGH and CRITICAL, JSON)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          # The image is linux/arm64 only; this runner is amd64, so say which platform to read.
+          TRIVY_PLATFORM: linux/arm64
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: image
+          image-ref: ${{ steps.resolve.outputs.ref }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '0'
+          trivyignores: .trivyignore.yaml
+          format: json
+          output: trivy.json
+      - name: Report fixable HIGH and CRITICAL (job log and summary)
+        id: report
+        env:
+          DIGEST: ${{ steps.resolve.outputs.digest }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          jq '[.Results[]? | .Vulnerabilities[]?
+               | {id: .VulnerabilityID, pkg: .PkgName, installed: .InstalledVersion, fixed: (.FixedVersion // ""), severity: .Severity,
+                  title: ((.Title // "") | gsub("[|\r\n]"; " ") | .[0:100])}]
+              | unique_by([.id, .pkg, .installed])
+              | sort_by([(if .severity == "CRITICAL" then 0 else 1 end), .id])' trivy.json > findings.json
+          jq '[.[] | select(.severity == "CRITICAL")]' findings.json > critical.json
+          crit="$(jq 'length' critical.json)"
+          high="$(jq '[.[] | select(.severity == "HIGH")] | length' findings.json)"
+          echo "critical=${crit}" >> "$GITHUB_OUTPUT"
+          echo "high=${high}" >> "$GITHUB_OUTPUT"
+          echo "${TAG} ${DIGEST}: fixable CRITICAL=${crit} fixable HIGH=${high}"
+          if [ "$((crit + high))" -gt 0 ]; then
+            jq -r '(["SEVERITY", "CVE", "PACKAGE", "INSTALLED", "FIXED", "TITLE"] | @tsv), (.[] | [.severity, .id, .pkg, .installed, .fixed, .title] | @tsv)' findings.json | column -t -s "$(printf '\t')"
+          fi
+          {
+            echo "### Rescan of ${TAG}"
+            echo '```'
+            echo "ghcr.io/${GITHUB_REPOSITORY}@${DIGEST}"
+            echo '```'
+            echo "Fixable CRITICAL: **${crit}**, fixable HIGH: **${high}**"
+            echo
+            if [ "$((crit + high))" -gt 0 ]; then
+              echo '| Severity | CVE | Package | Installed | Fixed | Title |'
+              echo '| --- | --- | --- | --- | --- | --- |'
+              jq -r '.[] | "| \(.severity) | \(.id) | \(.pkg) | \(.installed) | \(.fixed) | \(.title) |"' findings.json
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Open, update or close the security-rescan issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.resolve.outputs.digest }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          CRITICAL: ${{ steps.report.outputs.critical }}
+        run: |
+          set -euo pipefail
+          label=security-rescan
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          now="$(date -u '+%Y-%m-%d %H:%M UTC')"
+          gh label create "$label" --color B60205 --description "Nightly rescan found a fixable CRITICAL vulnerability" --force
+          # One issue only: if several are open (manual edits), the oldest is the one kept up to date.
+          open="$(gh issue list --label "$label" --state open --limit 100 --json number | jq -r 'map(.number) | sort | .[0] // empty')"
+          if [ "$(gh issue list --label "$label" --state open --limit 100 --json number | jq 'length')" -gt 1 ]; then
+            echo "::warning::more than one open ${label} issue; using #${open}"
+          fi
+
+          if [ "$CRITICAL" = 0 ]; then
+            if [ -z "$open" ]; then
+              echo "No fixable CRITICAL in ${TAG} and no open ${label} issue: nothing to do."
+              exit 0
+            fi
+            gh issue comment "$open" --body "Resolved in digest \`${DIGEST}\` (\`${TAG}\`): no fixable CRITICAL vulnerability found on ${now}. Run: ${run_url}"
+            gh issue close "$open" --reason completed
+            echo "Closed issue #${open}"
+            exit 0
+          fi
+
+          cves="$(jq -r '[.[].id] | unique | join(",")' critical.json)"
+          {
+            echo "The nightly rescan found ${CRITICAL} fixable CRITICAL vulnerabilities in the newest released image."
+            echo
+            echo "- Image: \`ghcr.io/${GITHUB_REPOSITORY}@${DIGEST}\`"
+            echo "- Tag: \`${TAG}\`"
+            echo "- Scanned: ${now}"
+            echo "- Run: ${run_url}"
+            echo
+            echo '| CVE | Package | Installed | Fixed | Title |'
+            echo '| --- | --- | --- | --- | --- |'
+            jq -r '.[] | "| \(.id) | \(.pkg) | \(.installed) | \(.fixed) | \(.title) |"' critical.json
+            echo
+            echo "Fix: update the dependency or base image, merge, and let release.yml publish a new image. The next rescan closes this issue when the newest image is clean."
+            echo
+            echo "<!-- cve-set: ${cves} -->"
+          } > body.md
+          title="Fixable CRITICAL vulnerabilities in podinfo ${TAG} (${CRITICAL})"
+
+          if [ -z "$open" ]; then
+            url="$(gh issue create --title "$title" --body-file body.md --label "$label")"
+            echo "Opened ${url}"
+            exit 0
+          fi
+
+          old="$(gh issue view "$open" --json body --jq .body | grep -o '<!-- cve-set: [^>]* -->' | sed 's/^<!-- cve-set: //; s/ -->$//' || true)"
+          gh issue edit "$open" --title "$title" --body-file body.md
+          if [ "$old" != "$cves" ]; then
+            gh issue comment "$open" --body "The set of fixable CRITICAL CVEs changed on ${now} (image \`${TAG}\`, run ${run_url}). Before: ${old:-none}. Now: ${cves}."
+            echo "Updated issue #${open} and commented (CVE set changed)"
+          else
+            echo "Updated issue #${open} (same CVE set, no comment)"
+          fi
