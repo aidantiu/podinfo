@@ -284,6 +284,6 @@ jobs:
           git checkout -b "$branch"
           git commit -am "podinfo: staging ${TAG}"
           git push origin "$branch"
-          body="$(printf 'Deploy `%s` to staging.\n\n- Release run: %s\n- Digest: `%s`\n- Signed by: `%s` (issuer https://token.actions.githubusercontent.com)\n\nChecks verify-digest (cosign + provenance) and bot-path-guard (only this one line) must pass; auto-merge is on.\n' "${TAG}@${DIGEST}" "$RUN_URL" "$DIGEST" "$IDENTITY")"
+          body="$(printf 'Deploy %s to staging.\n\n- Release run: %s\n- Digest: %s\n- Signed by: %s (issuer https://token.actions.githubusercontent.com)\n\nChecks verify-digest (cosign + provenance) and bot-path-guard (only this one line) must pass; auto-merge is on.\n' "${TAG}@${DIGEST}" "$RUN_URL" "$DIGEST" "$IDENTITY")"
           gh pr create --repo aidantiu/platform-gitops --base main --head "$branch" --title "podinfo: staging ${TAG}" --body "$body"
           gh pr merge "$branch" --repo aidantiu/platform-gitops --auto --squash --delete-branch
