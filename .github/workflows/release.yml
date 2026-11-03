@@ -219,3 +219,71 @@ jobs:
             echo "$FULL_IMAGE"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  promote-staging:
+    name: promote-staging
+    needs: [build, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # The GITHUB_TOKEN gets no permissions: everything here uses the short-lived GitHub App token (ADR-0016).
+    # Environment deploy-bot holds the App key and only deployments from main may use it.
+    permissions: {}
+    environment: deploy-bot
+    env:
+      DIGEST: ${{ needs.build.outputs.digest }}
+      TAG: ${{ needs.build.outputs.tag }}
+      FILE: apps/podinfo/staging/values.yaml
+    steps:
+      - name: Mint a GitHub App token for platform-gitops only
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DEPLOYER_CLIENT_ID }}
+          private-key: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          owner: aidantiu
+          repositories: platform-gitops
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Checkout platform-gitops
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: aidantiu/platform-gitops
+          token: ${{ steps.app.outputs.token }}
+          path: gitops
+      - name: Replace only the image.tag line of staging
+        working-directory: gitops
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::bad digest"; exit 1; }
+          [[ "$TAG" =~ ^sha-[0-9a-f]{8}$ ]] || { echo "::error::bad tag"; exit 1; }
+          pattern='^  tag: "sha-[0-9a-f]{8}@sha256:[0-9a-f]{64}"$'
+          n="$(grep -cE "$pattern" "$FILE" || true)"
+          [ "$n" = 1 ] || { echo "::error::expected exactly one image.tag line in ${FILE}, found ${n}"; exit 1; }
+          new="  tag: \"${TAG}@${DIGEST}\""
+          tmp="$(mktemp)"
+          while IFS= read -r line || [ -n "$line" ]; do
+            if [[ "$line" =~ ^\ \ tag:\ \"sha-[0-9a-f]{8}@sha256:[0-9a-f]{64}\"$ ]]; then printf '%s\n' "$new"; else printf '%s\n' "$line"; fi
+          done < "$FILE" > "$tmp"
+          cat "$tmp" > "$FILE"
+          git --no-pager diff --stat
+      - name: Open and auto-merge the pull request
+        working-directory: gitops
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          IDENTITY: https://github.com/aidantiu/podinfo/.github/workflows/release.yml@refs/heads/main
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "Staging already runs ${TAG}@${DIGEST}: nothing to do."
+            exit 0
+          fi
+          branch="bot/podinfo-staging-${TAG#sha-}"
+          git config user.name "ymnwri-deployer[bot]"
+          git config user.email "351378717+ymnwri-deployer[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git commit -am "podinfo: staging ${TAG}"
+          git push origin "$branch"
+          body="$(printf 'Deploy `%s` to staging.\n\n- Release run: %s\n- Digest: `%s`\n- Signed by: `%s` (issuer https://token.actions.githubusercontent.com)\n\nChecks verify-digest (cosign + provenance) and bot-path-guard (only this one line) must pass; auto-merge is on.\n' "${TAG}@${DIGEST}" "$RUN_URL" "$DIGEST" "$IDENTITY")"
+          gh pr create --repo aidantiu/platform-gitops --base main --head "$branch" --title "podinfo: staging ${TAG}" --body "$body"
+          gh pr merge "$branch" --repo aidantiu/platform-gitops --auto --squash --delete-branch
