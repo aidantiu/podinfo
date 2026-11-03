@@ -6,6 +6,7 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/stefanprodan/podinfo)](https://hub.docker.com/r/stefanprodan/podinfo)
 [![slsa](https://slsa.dev/images/gh-badge-level2.svg)](https://github.com/stefanprodan/podinfo/attestations)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/stefanprodan/podinfo)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/aidantiu/podinfo/badge)](https://scorecard.dev/viewer/?uri=github.com/aidantiu/podinfo)
 
 Podinfo is a tiny web application made with Go that showcases best practices of running microservices in Kubernetes.
 Podinfo is used by CNCF projects like [Flux](https://github.com/fluxcd/flux2) and [Flagger](https://github.com/fluxcd/flagger)
