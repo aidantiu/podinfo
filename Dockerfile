@@ -4,7 +4,7 @@ ARG REVISION
 
 RUN mkdir -p /podinfo/
 
-WORKDIR /podinfo
+WORKDIR podinfo
 
 COPY . .
 
