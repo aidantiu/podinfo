@@ -16,4 +16,7 @@
 #     expired_at: 2026-12-01
 #     purls:
 #       - pkg:golang/example.com/module@1.2.3
-vulnerabilities: []
+vulnerabilities:
+  - id: CVE-2099-0001
+    statement: "Exercise only: not a real finding. https://example.com/advisory"
+    expired_at: 2027-01-01
