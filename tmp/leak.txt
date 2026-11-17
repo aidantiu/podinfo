@@ -1,0 +1,5 @@
+package main
+
+// exercise only: fake key
+const awsKey = "AKIAQ3EGRXKQ7LZ2NBVP"
+const awsSecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzQ7LZ2NBVPxA1"
